@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+plotly
+seaborn
+matplotlib
+statsmodels>=0.14.0
+scipy>=1.10.0
+mlxtend
+scikit-learn
+openpyxl
+jinja2
