@@ -346,20 +346,11 @@ elif page == "Exploratory Data Analysis (EDA)":
 # --- PAGE 3: CLUSTERING ---
 elif page == "Clustering Analysis (K-Means)":
     st.markdown('<p class="main-header">🧩 Clustering Analysis (K-Means)</p>', unsafe_allow_html=True)
-    
     if df is not None:
-        st.markdown("""
-        **Features used for Clustering:**
-        `GDP_Growth`, `GDP_PC`, `Agr_Share`, `Ind_Share`, `Ser_Share`, `Trade_Open`, `FDI`, `Capital_Form`, `Inflation`, `Unemployment`, `Urbanization`, `Internet`, `Public_Debt`, `Labor_Force`
-        """)
-        
-        # Prepare Data for Live Calculation
-        features_clustering =['GDP_Growth', 'GDP_PC', 'Agr_Share', 'Ind_Share', 'Ser_Share',
-                            'Trade_Open', 'FDI', 'Capital_Form', 'Inflation', 'Unemployment',
-                            'Urbanization', 'Internet', 'Public_Debt','Labor_Force']
-        
-        # Filter and Dropna (as per snippet)
-        X = df[features_clustering].dropna()
+        features_clustering =['GDP_Growth', 'GDP_PC', 'Agr_Share', 'Ind_Share', 'Ser_Share', 'Trade_Open', 'FDI', 'Capital_Form', 'Inflation', 'Unemployment', 'Urbanization', 'Internet', 'Public_Debt','Labor_Force']
+        # Ensure cols exist
+        valid_clustering = [f for f in features_clustering if f in df.columns]
+        X = df[valid_clustering].dropna()
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
@@ -380,120 +371,65 @@ elif page == "Clustering Analysis (K-Means)":
                         inertia.append(kmeans.inertia_)
                         silhouette_scores.append(silhouette_score(X_scaled, kmeans.labels_))
                 
-                # Plotting Dual Axis (Inertia vs Silhouette)
-                fig_dual = go.Figure()
-                
-                # Trace 1: Inertia (Elbow)
-                fig_dual.add_trace(go.Scatter(
-                    x=list(K_range), y=inertia, name="Inertia (Elbow)",
-                    mode='lines+markers', line=dict(color='blue')
-                ))
-                
-                # Trace 2: Silhouette
-                fig_dual.add_trace(go.Scatter(
-                    x=list(K_range), y=silhouette_scores, name="Silhouette Score",
-                    mode='lines+markers', line=dict(color='red', dash='dash'),
-                    yaxis='y2'
-                ))
-                
-                fig_dual.update_layout(
-                    title="Evaluation of Optimal K: Elbow Method & Silhouette Score",
-                    xaxis_title="Number of Clusters (K)",
-                    yaxis=dict(title="Inertia", titlefont=dict(color="blue")),
-                    yaxis2=dict(title="Silhouette Score", titlefont=dict(color="red"), overlaying='y', side='right'),
-                    legend=dict(x=0.1, y=1.1, orientation='h')
-                )
-                st.plotly_chart(fig_dual, use_container_width=True)
-                
+                # --- MATPLOTLIB IMPLEMENTATION (Matches Notebook) ---
+                fig, ax1 = plt.subplots(figsize=(12, 6))
+                color = 'tab:blue'
+                ax1.set_xlabel('Số lượng cụm (K)')
+                ax1.set_ylabel('Inertia (Elbow Method)', color=color)
+                ax1.plot(K_range, inertia, marker='o', color=color)
+                ax1.tick_params(axis='y', labelcolor=color)
+                ax1.grid(True)
+
+                ax2 = ax1.twinx()
+                color = 'tab:red'
+                ax2.set_ylabel('Silhouette Score', color=color)
+                ax2.plot(K_range, silhouette_scores, marker='s', linestyle='--', color=color)
+                ax2.tick_params(axis='y', labelcolor=color)
+
+                plt.title('Đánh giá số cụm tối ưu: Elbow Method & Silhouette Score')
+                st.pyplot(fig)
+
                 best_k = list(K_range)[np.argmax(silhouette_scores)]
-                st.success(f"**Suggestion:** The optimal number of clusters based on Silhouette Score is **K={best_k}**.")
+                st.success(f"Số cụm tối ưu gợi ý theo Silhouette Score: {best_k}")
 
         with tabs[1]:
-            st.subheader("Step 2: PCA Visualization (K=4)")
-            st.markdown("Projecting the high-dimensional data into 2D using PCA to visualize cluster separation.")
-            
-            # Run PCA
+            st.subheader("Step 2: PCA Visualization")
             pca = PCA(n_components=2)
             principal_components = pca.fit_transform(X_scaled)
             pca_df = pd.DataFrame(data=principal_components, columns=['PC1', 'PC2'])
             
-            # Use existing clusters from file if available, otherwise recalculate K=4
+            # Use Cluster_Name if available, else calc
             if 'Cluster_Name' in df.columns:
-                # Ensure alignment of indices since we dropped NA
+                # Need to align indices because we dropped NAs for X
                 pca_df['Cluster'] = df.loc[X.index, 'Cluster_Name'].values
             else:
                 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
                 clusters = kmeans.fit_predict(X_scaled)
                 pca_df['Cluster'] = clusters.astype(str)
-
-            fig_pca = px.scatter(
-                pca_df, x='PC1', y='PC2', color='Cluster',
-                title='Cluster Distribution (PCA Projection)',
-                template='plotly_white',
-                opacity=0.8
-            )
+                
+            fig_pca = px.scatter(pca_df, x='PC1', y='PC2', color='Cluster', title='Cluster Distribution (PCA)', opacity=0.8)
             st.plotly_chart(fig_pca, use_container_width=True)
 
         with tabs[2]:
-            st.subheader("Step 3: Snake Plot (Cluster Characterization)")
-            st.markdown("Comparing the standardized mean values (Z-Scores) of each feature across clusters.")
-            
-            # Using the clusters from the file/dataframe
-            # We need to compute the means on the SCALED data to make them comparable
-            
-            # 1. Create a temporary df with scaled values and cluster labels
-            X_scaled_df = pd.DataFrame(X_scaled, columns=features_clustering, index=X.index)
-            X_scaled_df['Cluster'] = df.loc[X.index, 'Cluster_Name']
-            
-            # 2. Group by Cluster and take mean
+            st.subheader("Step 3: Snake Plot")
+            X_scaled_df = pd.DataFrame(X_scaled, columns=valid_clustering, index=X.index)
+            if 'Cluster_Name' in df.columns:
+                X_scaled_df['Cluster'] = df.loc[X.index, 'Cluster_Name']
+            else:
+                X_scaled_df['Cluster'] = pca_df['Cluster'].values
+                
             cluster_means = X_scaled_df.groupby('Cluster').mean()
-            
-            # 3. Melt for plotting
             cluster_melt = cluster_means.reset_index().melt(id_vars='Cluster', var_name='Feature', value_name='Z-Score')
-            
-            fig_snake = px.line(
-                cluster_melt, 
-                x='Feature', 
-                y='Z-Score', 
-                color='Cluster', 
-                markers=True,
-                title="Snake Plot: Standardized Characteristics of Each Cluster"
-            )
+            fig_snake = px.line(cluster_melt, x='Feature', y='Z-Score', color='Cluster', markers=True, title="Snake Plot")
             fig_snake.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
             st.plotly_chart(fig_snake, use_container_width=True)
-            
-            st.info("""
-            **Interpretation:**
-            * **Z-Score > 0:** The cluster is *above average* for this feature.
-            * **Z-Score < 0:** The cluster is *below average* for this feature.
-            """)
 
         with tabs[3]:
             st.subheader("Step 4: Evolution Heatmap")
-            st.markdown("Tracking how countries change economic states over time.")
-            
-            # Pivot table: Index=Country Code, Columns=Year, Values=Cluster Name
-            # Since Cluster Names are strings, we map them to numbers for color scaling, or use categorical heatmap
-            
-            # Prepare data
-            heatmap_data = df.pivot(index='Code', columns='Năm', values='Cluster_Name')
-            
-            # For visualization purposes, let's map names to integers if needed, 
-            # but Plotly imshow handles categories if we provide custom colors. 
-            # However, mapping to Cluster_ID (if available) is safer for coloring.
-            
             if 'Cluster_ID' in df.columns:
                 heatmap_val = df.pivot(index='Code', columns='Năm', values='Cluster_ID')
-                fig_heat = px.imshow(
-                    heatmap_val,
-                    color_continuous_scale='Viridis',
-                    aspect="auto",
-                    title="Heatmap: Economic State Evolution (By Cluster ID)"
-                )
+                fig_heat = px.imshow(heatmap_val, color_continuous_scale='Viridis', aspect="auto", title="Heatmap: Evolution")
                 st.plotly_chart(fig_heat, use_container_width=True)
-                
-                # Legend helper
-                st.caption("Reference the Cluster Names in the 'Profiles' tab to interpret IDs.")
 
 # --- PAGE 4: REGRESSION ---
 elif page == "Regression & Risk Analysis":
