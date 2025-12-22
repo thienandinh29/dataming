@@ -11,8 +11,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
-from sklearn.linear_model import LassoCV
+from sklearn.linear_model import LassoCV, LinearRegression
 from sklearn.tree import DecisionTreeClassifier, plot_tree, export_text
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
 
 # --- SAFE IMPORTS (Handle Library Conflicts) ---
 # Try importing statsmodels (Handling scipy version conflict)
@@ -74,12 +76,20 @@ st.markdown("""
 # --- DATA LOADING ---
 @st.cache_data
 def load_main_data():
+    # Priority 1: Load the CSV file that already contains Efficiency/Risk analysis results
+    try:
+        df = pd.read_csv("KetQua_PhanCum_Voi_HieuQua (1).csv")
+        return df
+    except FileNotFoundError:
+        pass
+
+    # Priority 2: Load the original Excel file
     try:
         # Loading the clustering result file which contains the main dataset
         df = pd.read_excel("data.xlsx")
         return df
     except FileNotFoundError:
-        st.error("⚠️ File 'data.xlsx - Sheet1.csv' not found. Please place it in the same directory.")
+        st.error("⚠️ Data files not found. Please upload 'KetQua_PhanCum_Voi_HieuQua (1).csv' or 'data.xlsx'.")
         return None
 
 @st.cache_data
@@ -98,7 +108,14 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942544.png", widt
 st.sidebar.title("Project Navigation")
 page = st.sidebar.radio(
     "Go to:",
-    ["Overview", "Exploratory Data Analysis (EDA)", "Clustering Analysis (K-Means)", "Regression & Risk Analysis", "Association Rules Miner"]
+    [
+        "Overview", 
+        "Exploratory Data Analysis (EDA)", 
+        "Clustering Analysis (K-Means)", 
+        "Regression & Risk Analysis", 
+        "Association Rules Miner",
+        "Decision Tree (Risk Prediction)"
+    ]
 )
 
 st.sidebar.markdown("---")
@@ -114,7 +131,7 @@ if page == "Overview":
     st.markdown("""
     ### Introduction
     This project applies Data Mining techniques to analyze the economic development patterns of Asian countries over two decades. 
-    By leveraging **Clustering, Association Rules, and Regression**, we aim to identify distinct growth models and the factors driving them.
+    By leveraging **Clustering, Association Rules, Regression, and Decision Trees**, we aim to identify distinct growth models and the factors driving them.
     """)
 
     if questions_df is not None:
@@ -122,7 +139,7 @@ if page == "Overview":
         st.dataframe(questions_df, use_container_width=True)
     
     st.markdown("### 🏗️ Methodology Pipeline")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.markdown("#### 1. Data Collection")
         st.caption("World Bank Data (GDP, FDI, Trade, etc.)")
@@ -135,6 +152,9 @@ if page == "Overview":
     with col4:
         st.markdown("#### 4. Regression & Risk")
         st.caption("Drivers & Efficiency Risk Labeling")
+    with col5:
+        st.markdown("#### 5. Decision Tree")
+        st.caption("Risk Warning & Rule Extraction")
 
 # --- PAGE 2: EDA ---
 elif page == "Exploratory Data Analysis (EDA)":
@@ -440,167 +460,188 @@ elif page == "Regression & Risk Analysis":
     """)
 
     if df is not None:
+        # --- MODIFIED: ALLOW PARTIAL EXECUTION WITHOUT STATSMODELS ---
         if not STATSMODELS_AVAILABLE:
-            st.error("⚠️ Library `statsmodels` failed to load due to a system environment conflict (scipy vs statsmodels). Please run `pip install --upgrade statsmodels scipy` in your terminal to fix this. In the meantime, this analysis page is disabled to prevent crashing.")
-        else:
+            st.warning("⚠️ `statsmodels` is missing. Running in limited mode using Scikit-Learn. P-values will not be available.")
+        
+        # Tabs Logic
+        if STATSMODELS_AVAILABLE:
             tabs = st.tabs(["1. Feature Selection (Lasso)", "2. Growth Drivers & Efficiency", "3. Detailed Results"])
+        else:
+            tabs = st.tabs(["1. Feature Selection (Lasso)", "2. Growth Drivers & Efficiency"])
+        
+        # --- TAB 1: LASSO ---
+        with tabs[0]:
+            st.subheader("Lasso Regression: Variable Selection")
+            st.markdown("We use Lasso Regression to automatically select the most important variables and eliminate irrelevant ones.")
             
-            # --- TAB 1: LASSO ---
-            with tabs[0]:
-                st.subheader("Lasso Regression: Variable Selection")
-                st.markdown("We use Lasso Regression to automatically select the most important variables and eliminate irrelevant ones.")
+            # 2. PREPARE "FULL" CANDIDATE LIST (from snippet)
+            candidates = [
+                'Capital_Form', 'Trade_Open', 'FDI', 'Public_Debt', 'Inflation',
+                'Labor_Force', 'Ind_Share', 'Agr_Share', 'Ser_Share', 
+                'Unemployment', 'Urbanization', 'Internet', 'Mobile', 'Electricity', 
+                'Reserves', 'Current_Account'
+            ]
+            
+            # Clean data for Lasso
+            # Ensure candidates exist in df
+            valid_candidates = [c for c in candidates if c in df.columns]
+            data_lasso = df[valid_candidates + ['GDP_Growth']].dropna()
+
+            X_lasso = data_lasso[valid_candidates]
+            y_lasso = data_lasso['GDP_Growth']
+
+            # 3. STANDARDIZE
+            scaler = StandardScaler()
+            X_scaled_lasso = scaler.fit_transform(X_lasso)
+
+            # 4. RUN LASSO CV
+            lasso = LassoCV(cv=5, random_state=42).fit(X_scaled_lasso, y_lasso)
+
+            # 5. EXTRACT & SORT
+            coef_df = pd.DataFrame({
+                'Feature': valid_candidates,
+                'Importance': lasso.coef_
+            })
+            coef_df['Abs_Importance'] = coef_df['Importance'].abs()
+            coef_df = coef_df.sort_values(by='Abs_Importance', ascending=False)
+
+            # 6. VISUALIZE
+            fig_lasso = plt.figure(figsize=(12, 6))
+            colors = ['red' if x < 0 else 'green' for x in coef_df['Importance']]
+            sns.barplot(data=coef_df, x='Importance', y='Feature', palette=colors)
+            plt.title('LASSO REGRESSION: Which variables matter?', fontsize=14, fontweight='bold')
+            plt.xlabel('Standardized Coefficient')
+            plt.axvline(0, color='black', linestyle='--')
+            plt.tight_layout()
+            st.pyplot(fig_lasso)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Top 5 Selected:**")
+                st.dataframe(coef_df.head(5)[['Feature', 'Importance']])
+            with col2:
+                st.write("**Rejected (Coeff ~ 0):**")
+                st.dataframe(coef_df[coef_df['Abs_Importance'] < 0.05][['Feature', 'Importance']])
+
+        # --- TAB 2: COMPREHENSIVE ANALYSIS (4 CHARTS) ---
+        with tabs[1]:
+            st.subheader("Comprehensive Regression Dashboard")
+            st.markdown("Visualizing the Genomic Heatmap of Growth Drivers, Efficiency Frontier, and Key Factor Distributions.")
+            
+            # Define Predictors (Lasso Selected / Hardcoded from snippet)
+            target_col = 'GDP_Growth'
+            predictors = ['Capital_Form', 'Trade_Open', 'FDI', 'Public_Debt', 'Inflation',
+                        'Internet', 'Ser_Share', 'Unemployment', 'Reserves', 'Electricity']
+            
+            # Ensure cols exist
+            valid_predictors = [c for c in predictors if c in df.columns]
+
+            # 2. RUN REGRESSION FOR HEATMAP (Loop over clusters)
+            cluster_results = []
+            if 'Cluster_ID' in df.columns and 'Cluster_Name' in df.columns:
+                clusters = df['Cluster_ID'].unique()
+                clusters.sort()
                 
-                # 2. PREPARE "FULL" CANDIDATE LIST (from snippet)
-                candidates = [
-                    'Capital_Form', 'Trade_Open', 'FDI', 'Public_Debt', 'Inflation',
-                    'Labor_Force', 'Ind_Share', 'Agr_Share', 'Ser_Share', 
-                    'Unemployment', 'Urbanization', 'Internet', 'Mobile', 'Electricity', 
-                    'Reserves', 'Current_Account'
-                ]
-                
-                # Clean data for Lasso
-                # Ensure candidates exist in df
-                valid_candidates = [c for c in candidates if c in df.columns]
-                data_lasso = df[valid_candidates + ['GDP_Growth']].dropna()
-
-                X_lasso = data_lasso[valid_candidates]
-                y_lasso = data_lasso['GDP_Growth']
-
-                # 3. STANDARDIZE
-                scaler = StandardScaler()
-                X_scaled_lasso = scaler.fit_transform(X_lasso)
-
-                # 4. RUN LASSO CV
-                lasso = LassoCV(cv=5, random_state=42).fit(X_scaled_lasso, y_lasso)
-
-                # 5. EXTRACT & SORT
-                coef_df = pd.DataFrame({
-                    'Feature': valid_candidates,
-                    'Importance': lasso.coef_
-                })
-                coef_df['Abs_Importance'] = coef_df['Importance'].abs()
-                coef_df = coef_df.sort_values(by='Abs_Importance', ascending=False)
-
-                # 6. VISUALIZE
-                fig_lasso = plt.figure(figsize=(12, 6))
-                colors = ['red' if x < 0 else 'green' for x in coef_df['Importance']]
-                sns.barplot(data=coef_df, x='Importance', y='Feature', palette=colors)
-                plt.title('LASSO REGRESSION: Which variables matter?', fontsize=14, fontweight='bold')
-                plt.xlabel('Standardized Coefficient')
-                plt.axvline(0, color='black', linestyle='--')
-                plt.tight_layout()
-                st.pyplot(fig_lasso)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**Top 5 Selected:**")
-                    st.dataframe(coef_df.head(5)[['Feature', 'Importance']])
-                with col2:
-                    st.write("**Rejected (Coeff ~ 0):**")
-                    st.dataframe(coef_df[coef_df['Abs_Importance'] < 0.05][['Feature', 'Importance']])
-
-            # --- TAB 2: COMPREHENSIVE ANALYSIS (4 CHARTS) ---
-            with tabs[1]:
-                st.subheader("Comprehensive Regression Dashboard")
-                st.markdown("Visualizing the Genomic Heatmap of Growth Drivers, Efficiency Frontier, and Key Factor Distributions.")
-                
-                # Define Predictors (Lasso Selected / Hardcoded from snippet)
-                target_col = 'GDP_Growth'
-                predictors = ['Capital_Form', 'Trade_Open', 'FDI', 'Public_Debt', 'Inflation',
-                            'Internet', 'Ser_Share', 'Unemployment', 'Reserves', 'Electricity']
-                
-                # Ensure cols exist
-                valid_predictors = [c for c in predictors if c in df.columns]
-
-                # 2. RUN REGRESSION FOR HEATMAP (Loop over clusters)
-                cluster_results = []
-                if 'Cluster_ID' in df.columns and 'Cluster_Name' in df.columns:
-                    clusters = df['Cluster_ID'].unique()
-                    clusters.sort()
-                    
-                    for cluster_id in clusters:
-                        sub_df = df[df['Cluster_ID'] == cluster_id].dropna(subset=valid_predictors + [target_col])
-                        if len(sub_df) > 10:
-                            cluster_name = sub_df['Cluster_Name'].iloc[0]
-                            X_clus = sub_df[valid_predictors]
-                            y_clus = sub_df[target_col]
+                for cluster_id in clusters:
+                    sub_df = df[df['Cluster_ID'] == cluster_id].dropna(subset=valid_predictors + [target_col])
+                    if len(sub_df) > 10:
+                        cluster_name = sub_df['Cluster_Name'].iloc[0]
+                        X_clus = sub_df[valid_predictors]
+                        y_clus = sub_df[target_col]
+                        
+                        if STATSMODELS_AVAILABLE:
                             X_clus = sm.add_constant(X_clus)
                             model_clus = sm.OLS(y_clus, X_clus).fit()
+                            params = model_clus.params
+                        else:
+                            # SKLEARN FALLBACK
+                            model_clus = LinearRegression()
+                            model_clus.fit(X_clus, y_clus)
+                            params = pd.Series(model_clus.coef_, index=valid_predictors)
 
-                            for feature in valid_predictors:
-                                cluster_results.append({
-                                    'Cluster_Name': cluster_name,
-                                    'Factor': feature,
-                                    'Coefficient': model_clus.params[feature]
-                                })
-                    
-                    res_df = pd.DataFrame(cluster_results)
-                    heatmap_data = res_df.pivot(index='Factor', columns='Cluster_Name', values='Coefficient')
-                else:
-                    st.error("Cluster columns missing. Ensure K-Means has been run or file has cluster info.")
-                    heatmap_data = pd.DataFrame()
-
-                # 3. CALCULATE EFFICIENCY & RISK LABEL
-                # Global Regression
-                X_all = df['Capital_Form']
-                y_all = df['GDP_Growth']
-                X_all = sm.add_constant(X_all)
+                        for feature in valid_predictors:
+                            cluster_results.append({
+                                'Cluster_Name': cluster_name,
+                                'Factor': feature,
+                                'Coefficient': params[feature]
+                            })
                 
-                # Drop NaN for specific regression
-                mask_eff = ~np.isnan(X_all['Capital_Form']) & ~np.isnan(y_all)
-                X_all_clean = X_all[mask_eff]
-                y_all_clean = y_all[mask_eff]
-                
-                model_all = sm.OLS(y_all_clean, X_all_clean).fit()
-                
-                # Predict and calculate residuals (Efficiency)
-                df.loc[mask_eff, 'Expected_Growth'] = model_all.predict(X_all_clean)
-                df.loc[mask_eff, 'Efficiency_Score'] = df.loc[mask_eff, 'GDP_Growth'] - df.loc[mask_eff, 'Expected_Growth']
-                df['Risk_Label'] = df['Efficiency_Score'].apply(lambda x: 1 if x < 0 else 0)
+                res_df = pd.DataFrame(cluster_results)
+                heatmap_data = res_df.pivot(index='Factor', columns='Cluster_Name', values='Coefficient')
+            else:
+                st.error("Cluster columns missing. Ensure K-Means has been run or file has cluster info.")
+                heatmap_data = pd.DataFrame()
 
-                # --- PLOTTING (4 CHARTS) ---
-                if not heatmap_data.empty:
-                    fig = plt.figure(figsize=(20, 18))
-                    gs = fig.add_gridspec(3, 2)
+            # 3. CALCULATE EFFICIENCY & RISK LABEL
+            # Prepare Data
+            X_all = df[['Capital_Form']].values
+            y_all = df['GDP_Growth'].values
+            
+            # Drop NaN
+            mask_eff = ~np.isnan(X_all).flatten() & ~np.isnan(y_all)
+            X_all_clean = X_all[mask_eff]
+            y_all_clean = y_all[mask_eff]
+            
+            # Regression (Statsmodels or Sklearn)
+            if STATSMODELS_AVAILABLE:
+                X_all_sm = sm.add_constant(X_all_clean)
+                model_all = sm.OLS(y_all_clean, X_all_sm).fit()
+                expected_growth = model_all.predict(X_all_sm)
+            else:
+                model_all = LinearRegression()
+                model_all.fit(X_all_clean, y_all_clean)
+                expected_growth = model_all.predict(X_all_clean)
+            
+            # Calculate Risk Label
+            df.loc[mask_eff, 'Expected_Growth'] = expected_growth
+            df.loc[mask_eff, 'Efficiency_Score'] = df.loc[mask_eff, 'GDP_Growth'] - df.loc[mask_eff, 'Expected_Growth']
+            df['Risk_Label'] = df['Efficiency_Score'].apply(lambda x: 1 if x < 0 else 0)
 
-                    # Chart 1: Heatmap
-                    ax1 = fig.add_subplot(gs[0, 0])
-                    sns.heatmap(heatmap_data, annot=True, cmap='RdBu_r', center=0, fmt=".3f", ax=ax1, linewidths=.5)
-                    ax1.set_title('1. GROWTH GENOME MAP\n(Blue: Positive | Red: Negative)', fontsize=12, fontweight='bold')
-                    ax1.set_xlabel('')
+            # --- PLOTTING (4 CHARTS) ---
+            if not heatmap_data.empty:
+                fig = plt.figure(figsize=(20, 18))
+                gs = fig.add_gridspec(3, 2)
 
-                    # Chart 2: Efficiency Frontier
-                    ax2 = fig.add_subplot(gs[0, 1])
-                    sns.scatterplot(data=df, x='Capital_Form', y='GDP_Growth', hue='Cluster_Name', style='Cluster_Name',
-                                    palette='viridis', alpha=0.7, ax=ax2, s=60)
-                    # Highlight Vietnam
-                    vn_data = df[df['Code'] == 'VNM']
-                    if not vn_data.empty:
-                        ax2.scatter(vn_data['Capital_Form'], vn_data['GDP_Growth'], color='red', s=150, label='Việt Nam', edgecolors='black', marker='*', zorder=10)
-                    sns.regplot(data=df, x='Capital_Form', y='GDP_Growth', scatter=False, ax=ax2, color='gray', line_kws={'linestyle':'--'})
-                    ax2.set_title('2. EFFICIENCY FRONTIER\n(Vietnam: Moderate Investment - High Growth)', fontsize=12, fontweight='bold')
-                    ax2.legend(bbox_to_anchor=(1, 1), loc='upper left', fontsize='small')
+                # Chart 1: Heatmap
+                ax1 = fig.add_subplot(gs[0, 0])
+                sns.heatmap(heatmap_data, annot=True, cmap='RdBu_r', center=0, fmt=".3f", ax=ax1, linewidths=.5)
+                ax1.set_title('1. GROWTH GENOME MAP\n(Blue: Positive | Red: Negative)', fontsize=12, fontweight='bold')
+                ax1.set_xlabel('')
 
-                    # Chart 3: Trade Openness Boxplot
-                    ax3 = fig.add_subplot(gs[1, 0])
-                    sns.boxplot(data=df, x='Cluster_Name', y='Trade_Open', palette='Set2', ax=ax3)
-                    ax3.set_title('3. TRADE OPENNESS (Key Driver)', fontsize=12, fontweight='bold')
-                    ax3.set_xticklabels(ax3.get_xticklabels(), rotation=15, ha='right')
-                    ax3.set_xlabel('')
+                # Chart 2: Efficiency Frontier
+                ax2 = fig.add_subplot(gs[0, 1])
+                sns.scatterplot(data=df, x='Capital_Form', y='GDP_Growth', hue='Cluster_Name', style='Cluster_Name',
+                                palette='viridis', alpha=0.7, ax=ax2, s=60)
+                # Highlight Vietnam
+                vn_data = df[df['Code'] == 'VNM']
+                if not vn_data.empty:
+                    ax2.scatter(vn_data['Capital_Form'], vn_data['GDP_Growth'], color='red', s=150, label='Việt Nam', edgecolors='black', marker='*', zorder=10)
+                sns.regplot(data=df, x='Capital_Form', y='GDP_Growth', scatter=False, ax=ax2, color='gray', line_kws={'linestyle':'--'})
+                ax2.set_title('2. EFFICIENCY FRONTIER\n(Vietnam: Moderate Investment - High Growth)', fontsize=12, fontweight='bold')
+                ax2.legend(bbox_to_anchor=(1, 1), loc='upper left', fontsize='small')
 
-                    # Chart 4: FDI Boxplot
-                    ax4 = fig.add_subplot(gs[1, 1])
-                    sns.boxplot(data=df, x='Cluster_Name', y='FDI', palette='Set3', ax=ax4)
-                    ax4.set_title('4. FDI (Crucial Capital Flow)', fontsize=12, fontweight='bold')
-                    ax4.set_xticklabels(ax4.get_xticklabels(), rotation=15, ha='right')
-                    ax4.set_xlabel('')
+                # Chart 3: Trade Openness Boxplot
+                ax3 = fig.add_subplot(gs[1, 0])
+                sns.boxplot(data=df, x='Cluster_Name', y='Trade_Open', palette='Set2', ax=ax3)
+                ax3.set_title('3. TRADE OPENNESS (Key Driver)', fontsize=12, fontweight='bold')
+                ax3.set_xticklabels(ax3.get_xticklabels(), rotation=15, ha='right')
+                ax3.set_xlabel('')
 
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.warning("Insufficient data to generate regression dashboard.")
+                # Chart 4: FDI Boxplot
+                ax4 = fig.add_subplot(gs[1, 1])
+                sns.boxplot(data=df, x='Cluster_Name', y='FDI', palette='Set3', ax=ax4)
+                ax4.set_title('4. FDI (Crucial Capital Flow)', fontsize=12, fontweight='bold')
+                ax4.set_xticklabels(ax4.get_xticklabels(), rotation=15, ha='right')
+                ax4.set_xlabel('')
 
-            # --- TAB 3: DETAILED RESULTS ---
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.warning("Insufficient data to generate regression dashboard.")
+
+        # --- TAB 3: DETAILED RESULTS ---
+        if STATSMODELS_AVAILABLE:
             with tabs[2]:
                 st.subheader("Regression Statistics per Cluster")
                 
@@ -651,22 +692,28 @@ elif page == "Association Rules Miner":
         st.error("⚠️ Library `mlxtend` is missing. Please run `pip install mlxtend` to use this feature.")
     elif df is not None:
         # --- PREPARATION: RE-CALCULATE RISK LABEL ---
-        # We need Risk_Label to exist even if user skipped the Regression page
-        # Logic: GDP_Growth ~ Capital_Form residuals
-        if STATSMODELS_AVAILABLE:
-            X_risk = df['Capital_Form']
-            y_risk = df['GDP_Growth']
-            X_risk = sm.add_constant(X_risk)
-            mask_risk = ~np.isnan(X_risk['Capital_Form']) & ~np.isnan(y_risk)
-            if mask_risk.sum() > 10:
-                mod_risk = sm.OLS(y_risk[mask_risk], X_risk[mask_risk]).fit()
-                expected = mod_risk.predict(X_risk[mask_risk])
-                efficiency = y_risk[mask_risk] - expected
-                # 1 = Inefficient (Risky), 0 = Efficient
-                df.loc[mask_risk, 'Risk_Label'] = efficiency.apply(lambda x: 1 if x < 0 else 0)
-        else:
-             st.warning("Skipping Risk Label calculation because `statsmodels` is missing.")
-
+        # Robust Risk Label Calculation (Handles missing statsmodels)
+        
+        # Prepare Data
+        X_risk = df[['Capital_Form']].values
+        y_risk = df['GDP_Growth'].values
+        
+        mask_risk = ~np.isnan(X_risk).flatten() & ~np.isnan(y_risk)
+        X_r_clean = X_risk[mask_risk]
+        y_r_clean = y_risk[mask_risk]
+        
+        if len(X_r_clean) > 10:
+            if STATSMODELS_AVAILABLE:
+                X_r_sm = sm.add_constant(X_r_clean)
+                mod_risk = sm.OLS(y_r_clean, X_r_sm).fit()
+                expected = mod_risk.predict(X_r_sm)
+            else:
+                mod_risk = LinearRegression()
+                mod_risk.fit(X_r_clean, y_r_clean)
+                expected = mod_risk.predict(X_r_clean)
+                
+            df.loc[mask_risk, 'Efficiency_Score'] = y_r_clean - expected
+            df['Risk_Label'] = df['Efficiency_Score'].apply(lambda x: 1 if x < 0 else 0)
 
         # --- CONFIGURATION ---
         selected_vars = [
@@ -810,6 +857,197 @@ elif page == "Association Rules Miner":
                     st.pyplot(fig_heat)
                     
                     st.info("Tip: Choose parameters that yield a manageable number of rules (e.g., light blue/green areas).")
+
+# --- PAGE 6: DECISION TREE ---
+elif page == "Decision Tree (Risk Prediction)":
+    st.markdown('<p class="main-header">🌳 Decision Tree: Risk Warning System</p>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    ### Interpretable Machine Learning
+    We use a **Decision Tree** to classify whether an economy is **Inefficient (Risky)** or **Efficient**. 
+    This model provides clear "If-Then" rules to explain the causes of economic risk.
+    """)
+
+    if df is not None:
+        # --- 1. DATA PREPARATION (Calculate Target Variable) ---
+        # Robust Target Variable Logic: Use existing column if available, else calculate
+        
+        target_col = None
+        if 'Below_Efficiency_Frontier' in df.columns:
+            target_col = 'Below_Efficiency_Frontier'
+            st.info("Using pre-existing target column: 'Below_Efficiency_Frontier'")
+        elif 'Risk_Label' in df.columns:
+             target_col = 'Risk_Label'
+             st.info("Using pre-existing target column: 'Risk_Label'")
+        else:
+            # Fallback Calculation
+            try:
+                X_eff = df[['Capital_Form']].values
+                y_eff = df['GDP_Growth'].values
+                mask = ~np.isnan(X_eff).flatten() & ~np.isnan(y_eff)
+                
+                if len(X_eff[mask]) > 10:
+                    model_eff = LinearRegression()
+                    model_eff.fit(X_eff[mask], y_eff[mask])
+                    expected = model_eff.predict(X_eff[mask])
+                    
+                    df.loc[mask, 'Expected_Growth'] = expected
+                    df.loc[mask, 'Efficiency_Score'] = df.loc[mask, 'GDP_Growth'] - df.loc[mask, 'Expected_Growth']
+                    df['Risk_Label'] = df['Efficiency_Score'].apply(lambda x: 1 if x < 0 else 0)
+                    target_col = 'Risk_Label'
+            except Exception as e:
+                 st.error(f"Could not calculate Risk Label: {e}")
+                 st.stop()
+        
+        if target_col is None:
+             st.error("Target variable could not be determined.")
+             st.stop()
+
+        # Display Value Counts
+        st.write(f"**Distribution of {target_col} (1 = Risky/Inefficient):**")
+        st.write(df[target_col].value_counts())
+
+        # --- 2. SIDEBAR CONFIG FOR MODEL ---
+        st.sidebar.markdown("### ⚙️ Model Config")
+        
+        # 2.1 Feature Selection
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        exclude_cols = ['GDP_Growth', 'Cluster_ID', 'Cluster', 'Efficiency_Score', 'Expected_Growth', target_col]
+        if 'Below_Efficiency_Frontier' in df.columns and target_col != 'Below_Efficiency_Frontier': exclude_cols.append('Below_Efficiency_Frontier')
+        if 'Risk_Label' in df.columns and target_col != 'Risk_Label': exclude_cols.append('Risk_Label')
+
+        feature_options = [c for c in numeric_cols if c not in exclude_cols]
+        
+        # Updated default features to match the user's original decision tree
+        # Removed 'Capital_Form' as it was likely excluded in the original analysis (based on provided rules)
+        default_feats = [
+            'Internet', 'FDI', 'Unemployment', 'Ser_Share', 'Ind_Share',
+            'Urbanization', 'Trade_Open', 'Public_Debt', 'Reserves',
+            'Current_Account', 'Inflation', 'Labor_Force', 'Agr_Share',
+            'Electricity', 'Mobile'
+        ]
+        # Only keep valid default features
+        default_feats = [f for f in default_feats if f in feature_options]
+
+        selected_features = st.sidebar.multiselect(
+            "Select Features (X):", 
+            options=feature_options, 
+            default=default_feats
+        )
+        
+        if not selected_features:
+            st.error("Please select at least one feature from the sidebar.")
+            st.stop()
+            
+        # 2.2 Model Hyperparameters
+        test_size = st.sidebar.slider("Test Size Ratio", 0.05, 0.5, 0.3, 0.05)
+        
+        # ADDED: Option to match 'df.dropna()' behavior of original script
+        strict_drop = st.sidebar.checkbox("Strict Drop (Drop row if ANY column is missing)", value=False, help="Check this if your original script used df.dropna() on the entire dataset.")
+
+        # CHANGED: Default value to False to match original 'max_depth=None'
+        limit_depth = st.sidebar.checkbox("Limit Tree Depth", value=False)
+        if limit_depth:
+            max_depth = st.sidebar.slider("Max Depth", 1, 30, 10)
+        else:
+            max_depth = None
+            
+        criterion = st.sidebar.selectbox("Criterion", ["gini", "entropy"])
+
+        # --- 3. TRAIN MODEL ---
+        # Data Cleaning Logic
+        if strict_drop:
+            # Drop rows where ANY column in the entire dataframe is missing (Simulates raw df.dropna())
+            df_clean = df.dropna()
+            df_dt = df_clean[selected_features + [target_col]]
+        else:
+            # Smart Drop: Only drop rows where SELECTED features are missing (Retains more data)
+            df_dt = df[selected_features + [target_col]].dropna()
+
+        X = df_dt[selected_features]
+        y = df_dt[target_col]
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+        
+        dt_classifier = DecisionTreeClassifier(
+            max_depth=max_depth, 
+            criterion=criterion, 
+            random_state=42
+        )
+        dt_classifier.fit(X_train, y_train)
+        y_pred = dt_classifier.predict(X_test)
+
+        # --- 4. TABS FOR RESULTS ---
+        tabs = st.tabs(["1. Model Evaluation", "2. Feature Importance", "3. Tree Visualization", "4. Text Rules"])
+
+        # TAB 1: EVALUATION METRICS
+        with tabs[0]:
+            st.subheader("Model Performance")
+            
+            acc = accuracy_score(y_test, y_pred)
+            prec = precision_score(y_test, y_pred, zero_division=0)
+            rec = recall_score(y_test, y_pred, zero_division=0)
+            f1 = f1_score(y_test, y_pred, zero_division=0)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Accuracy", f"{acc:.2%}")
+            c2.metric("Precision", f"{prec:.2%}")
+            c3.metric("Recall", f"{rec:.2%}")
+            c4.metric("F1 Score", f"{f1:.2%}")
+
+            st.write("---")
+            col_cm1, col_cm2 = st.columns([1, 2])
+            
+            with col_cm1:
+                st.markdown("#### Confusion Matrix")
+                cm = confusion_matrix(y_test, y_pred)
+                fig_cm = plt.figure(figsize=(5, 4))
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                            xticklabels=['No Risk', 'Risk'],
+                            yticklabels=['No Risk', 'Risk'])
+                plt.ylabel('Actual')
+                plt.xlabel('Predicted')
+                st.pyplot(fig_cm)
+            
+            with col_cm2:
+                st.markdown("#### Classification Report")
+                report = classification_report(y_test, y_pred, target_names=['No Risk', 'Risk'], output_dict=True)
+                st.dataframe(pd.DataFrame(report).transpose().style.format("{:.2f}"))
+
+        # TAB 2: FEATURE IMPORTANCE
+        with tabs[1]:
+            st.subheader("Feature Importance")
+            importances = dt_classifier.feature_importances_
+            feature_imp_df = pd.Series(importances, index=selected_features).sort_values(ascending=False)
+
+            fig_imp = plt.figure(figsize=(10, 6))
+            sns.barplot(x=feature_imp_df.values, y=feature_imp_df.index, palette='viridis')
+            plt.title('Feature Importance')
+            plt.xlabel('Importance')
+            plt.grid(axis='x', linestyle='--', alpha=0.5)
+            st.pyplot(fig_imp)
+
+        # TAB 3: VISUALIZATION
+        with tabs[2]:
+            st.subheader("Decision Tree Visualization")
+            st.caption(f"Max Depth: {max_depth} | Features: {len(selected_features)}")
+            
+            fig_tree = plt.figure(figsize=(25, 15))
+            plot_tree(
+                dt_classifier, 
+                feature_names=selected_features,
+                class_names=['Efficient (0)', 'Inefficient (1)'],
+                filled=True,
+                rounded=True,
+                fontsize=10
+            )
+            st.pyplot(fig_tree)
+
+        # TAB 4: RULES TEXT
+        with tabs[3]:
+            st.subheader("Text Rules")
+            tree_rules = export_text(dt_classifier, feature_names=selected_features)
+            st.code(tree_rules, language="text")
 
 # --- FOOTER ---
 st.sidebar.markdown("---")
