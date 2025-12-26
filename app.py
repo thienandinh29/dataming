@@ -367,12 +367,25 @@ elif page == "Exploratory Data Analysis (EDA)":
 elif page == "Clustering Analysis (K-Means)":
     st.markdown('<p class="main-header">🧩 Clustering Analysis (K-Means)</p>', unsafe_allow_html=True)
     if df is not None:
-        features_clustering =['GDP_Growth', 'GDP_PC', 'Agr_Share', 'Ind_Share', 'Ser_Share', 'Trade_Open', 'FDI', 'Capital_Form', 'Inflation', 'Unemployment', 'Urbanization', 'Internet', 'Public_Debt','Labor_Force']
-        # Ensure cols exist
-        valid_clustering = [f for f in features_clustering if f in df.columns]
-        X = df[valid_clustering].dropna()
+        # --- MODIFIED: USER'S NEW PREPROCESSING LOGIC ---
+        # Dropping specific non-feature columns instead of selecting specific features
+        cols_to_drop = ['Code', 'Quốc gia', 'Năm', 'Cluster_ID', 'Cluster_Name', 'Tiểu khu vực', 'Cluster']
+        
+        # Create X_raw by dropping cols, keeping only what remains (likely numeric features)
+        X_raw = df.drop(columns=cols_to_drop, errors='ignore')
+        
+        # Ensure only numeric data remains
+        X_raw = X_raw.select_dtypes(include=[np.number])
+
+        # Handle missing values
+        X_raw = X_raw.dropna()
+        
+        # Standardize
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        X_scaled = scaler.fit_transform(X_raw)
+        
+        # Store for use in tabs
+        X = X_raw 
 
         tabs = st.tabs(["1. Optimal K (Elbow)", "2. PCA Visualization", "3. Snake Plot (Profiles)", "4. Heatmap (Timeline)"])
 
@@ -380,6 +393,7 @@ elif page == "Clustering Analysis (K-Means)":
             st.subheader("Step 1: Determine Optimal Clusters (Elbow & Silhouette)")
             
             if st.button("Run Elbow Analysis"):
+                # --- USER'S NEW ELBOW LOGIC ---
                 inertia = []
                 silhouette_scores = []
                 K_range = range(2, 11)
@@ -390,23 +404,25 @@ elif page == "Clustering Analysis (K-Means)":
                         kmeans.fit(X_scaled)
                         inertia.append(kmeans.inertia_)
                         silhouette_scores.append(silhouette_score(X_scaled, kmeans.labels_))
-                
-                # --- MATPLOTLIB IMPLEMENTATION (Matches Notebook) ---
+
+                # Plotting (Updated to match user advice)
                 fig, ax1 = plt.subplots(figsize=(12, 6))
+
                 color = 'tab:blue'
                 ax1.set_xlabel('Số lượng cụm (K)')
                 ax1.set_ylabel('Inertia (Elbow Method)', color=color)
-                ax1.plot(K_range, inertia, marker='o', color=color)
+                ax1.plot(K_range, inertia, marker='o', color=color, label='Inertia')
                 ax1.tick_params(axis='y', labelcolor=color)
                 ax1.grid(True)
 
                 ax2 = ax1.twinx()
                 color = 'tab:red'
                 ax2.set_ylabel('Silhouette Score', color=color)
-                ax2.plot(K_range, silhouette_scores, marker='s', linestyle='--', color=color)
+                ax2.plot(K_range, silhouette_scores, marker='s', linestyle='--', color=color, label='Silhouette')
                 ax2.tick_params(axis='y', labelcolor=color)
 
                 plt.title('Đánh giá số cụm tối ưu: Elbow Method & Silhouette Score')
+                # Replaced plt.savefig with st.pyplot for Streamlit display
                 st.pyplot(fig)
 
                 best_k = list(K_range)[np.argmax(silhouette_scores)]
@@ -418,10 +434,17 @@ elif page == "Clustering Analysis (K-Means)":
             principal_components = pca.fit_transform(X_scaled)
             pca_df = pd.DataFrame(data=principal_components, columns=['PC1', 'PC2'])
             
-            # Use Cluster_Name if available, else calc
+            # Use Cluster_Name if available and indices match
             if 'Cluster_Name' in df.columns:
-                # Need to align indices because we dropped NAs for X
-                pca_df['Cluster'] = df.loc[X.index, 'Cluster_Name'].values
+                # We need to be careful with indices since X_raw had NA dropped
+                # We try to align via index
+                try:
+                    pca_df['Cluster'] = df.loc[X_raw.index, 'Cluster_Name'].values
+                except KeyError:
+                    # Fallback if indices don't align easily
+                    kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
+                    clusters = kmeans.fit_predict(X_scaled)
+                    pca_df['Cluster'] = clusters.astype(str)
             else:
                 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
                 clusters = kmeans.fit_predict(X_scaled)
@@ -432,9 +455,13 @@ elif page == "Clustering Analysis (K-Means)":
 
         with tabs[2]:
             st.subheader("Step 3: Snake Plot")
-            X_scaled_df = pd.DataFrame(X_scaled, columns=valid_clustering, index=X.index)
+            X_scaled_df = pd.DataFrame(X_scaled, columns=X_raw.columns, index=X_raw.index)
+            
             if 'Cluster_Name' in df.columns:
-                X_scaled_df['Cluster'] = df.loc[X.index, 'Cluster_Name']
+                try:
+                    X_scaled_df['Cluster'] = df.loc[X_raw.index, 'Cluster_Name']
+                except:
+                    X_scaled_df['Cluster'] = pca_df['Cluster'].values
             else:
                 X_scaled_df['Cluster'] = pca_df['Cluster'].values
                 
@@ -810,7 +837,7 @@ elif page == "Association Rules Miner":
             
             if st.button("Run Grid Search"):
                 with st.spinner("Processing & Calculating Matrix..."):
-                     # 1. Processing (Repeat logic efficiently)
+                      # 1. Processing (Repeat logic efficiently)
                     df_pro_grid = df.copy()
                     valid_cols_grid = [c for c in selected_vars if c in df_pro_grid.columns]
                     for col in valid_cols_grid:
@@ -869,18 +896,9 @@ elif page == "Decision Tree (Risk Prediction)":
     """)
 
     if df is not None:
-        # --- 1. DATA PREPARATION (Calculate Target Variable) ---
-        # Robust Target Variable Logic: Use existing column if available, else calculate
-        
-        target_col = None
-        if 'Below_Efficiency_Frontier' in df.columns:
-            target_col = 'Below_Efficiency_Frontier'
-            st.info("Using pre-existing target column: 'Below_Efficiency_Frontier'")
-        elif 'Risk_Label' in df.columns:
-             target_col = 'Risk_Label'
-             st.info("Using pre-existing target column: 'Risk_Label'")
-        else:
-            # Fallback Calculation
+        # --- 1. DATA PREPARATION ---
+        # Ensure Efficiency Score is calculated (copied logic for robustness)
+        if 'Efficiency_Score' not in df.columns:
             try:
                 X_eff = df[['Capital_Form']].values
                 y_eff = df['GDP_Growth'].values
@@ -893,161 +911,146 @@ elif page == "Decision Tree (Risk Prediction)":
                     
                     df.loc[mask, 'Expected_Growth'] = expected
                     df.loc[mask, 'Efficiency_Score'] = df.loc[mask, 'GDP_Growth'] - df.loc[mask, 'Expected_Growth']
-                    df['Risk_Label'] = df['Efficiency_Score'].apply(lambda x: 1 if x < 0 else 0)
-                    target_col = 'Risk_Label'
             except Exception as e:
-                 st.error(f"Could not calculate Risk Label: {e}")
-                 st.stop()
-        
-        if target_col is None:
-             st.error("Target variable could not be determined.")
-             st.stop()
+                st.warning(f"Could not calculate Efficiency Score dynamically: {e}")
 
-        # Display Value Counts
-        st.write(f"**Distribution of {target_col} (1 = Risky/Inefficient):**")
-        st.write(df[target_col].value_counts())
-
-        # --- 2. SIDEBAR CONFIG FOR MODEL ---
-        st.sidebar.markdown("### ⚙️ Model Config")
-        
-        # 2.1 Feature Selection
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        exclude_cols = ['GDP_Growth', 'Cluster_ID', 'Cluster', 'Efficiency_Score', 'Expected_Growth', target_col]
-        if 'Below_Efficiency_Frontier' in df.columns and target_col != 'Below_Efficiency_Frontier': exclude_cols.append('Below_Efficiency_Frontier')
-        if 'Risk_Label' in df.columns and target_col != 'Risk_Label': exclude_cols.append('Risk_Label')
-
-        feature_options = [c for c in numeric_cols if c not in exclude_cols]
-        
-        # Updated default features to match the user's original decision tree
-        # Removed 'Capital_Form' as it was likely excluded in the original analysis (based on provided rules)
-        default_feats = [
-            'Internet', 'FDI', 'Unemployment', 'Ser_Share', 'Ind_Share',
-            'Urbanization', 'Trade_Open', 'Public_Debt', 'Reserves',
-            'Current_Account', 'Inflation', 'Labor_Force', 'Agr_Share',
-            'Electricity', 'Mobile'
-        ]
-        # Only keep valid default features
-        default_feats = [f for f in default_feats if f in feature_options]
-
-        selected_features = st.sidebar.multiselect(
-            "Select Features (X):", 
-            options=feature_options, 
-            default=default_feats
-        )
-        
-        if not selected_features:
-            st.error("Please select at least one feature from the sidebar.")
-            st.stop()
+        if 'Efficiency_Score' in df.columns:
+            # Create the new target variable 'Below_Efficiency_Frontier'
+            df['Below_Efficiency_Frontier'] = np.where(df['Efficiency_Score'] < 0, 1, 0)
+            target_col = 'Below_Efficiency_Frontier'
             
-        # 2.2 Model Hyperparameters
-        test_size = st.sidebar.slider("Test Size Ratio", 0.05, 0.5, 0.3, 0.05)
-        
-        # ADDED: Option to match 'df.dropna()' behavior of original script
-        strict_drop = st.sidebar.checkbox("Strict Drop (Drop row if ANY column is missing)", value=False, help="Check this if your original script used df.dropna() on the entire dataset.")
-
-        # CHANGED: Default value to False to match original 'max_depth=None'
-        limit_depth = st.sidebar.checkbox("Limit Tree Depth", value=False)
-        if limit_depth:
-            max_depth = st.sidebar.slider("Max Depth", 1, 30, 10)
-        else:
-            max_depth = None
+            # Display Value Counts
+            st.write("Value counts for 'Below_Efficiency_Frontier':")
+            st.write(df['Below_Efficiency_Frontier'].value_counts())
             
-        criterion = st.sidebar.selectbox("Criterion", ["gini", "entropy"])
-
-        # --- 3. TRAIN MODEL ---
-        # Data Cleaning Logic
-        if strict_drop:
-            # Drop rows where ANY column in the entire dataframe is missing (Simulates raw df.dropna())
-            df_clean = df.dropna()
-            df_dt = df_clean[selected_features + [target_col]]
-        else:
-            # Smart Drop: Only drop rows where SELECTED features are missing (Retains more data)
-            df_dt = df[selected_features + [target_col]].dropna()
-
-        X = df_dt[selected_features]
-        y = df_dt[target_col]
-
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
-        
-        dt_classifier = DecisionTreeClassifier(
-            max_depth=max_depth, 
-            criterion=criterion, 
-            random_state=42
-        )
-        dt_classifier.fit(X_train, y_train)
-        y_pred = dt_classifier.predict(X_test)
-
-        # --- 4. TABS FOR RESULTS ---
-        tabs = st.tabs(["1. Model Evaluation", "2. Feature Importance", "3. Tree Visualization", "4. Text Rules"])
-
-        # TAB 1: EVALUATION METRICS
-        with tabs[0]:
-            st.subheader("Model Performance")
+            # --- 2. FEATURE SELECTION (Using Exclusion List) ---
+            columns_to_exclude = [
+                'Code', 'Quốc gia', 'Năm', 'Cluster_ID', 'Cluster_Name', 'Tiểu khu vực',
+                'Efficiency_Score', 'Risk_Label', 'Below_Efficiency_Frontier',
+                'Expected_Growth', 'Cluster',
+                'GDP_PC', "GDP_Growth", "Capital_Form"
+            ]
             
-            acc = accuracy_score(y_test, y_pred)
-            prec = precision_score(y_test, y_pred, zero_division=0)
-            rec = recall_score(y_test, y_pred, zero_division=0)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Accuracy", f"{acc:.2%}")
-            c2.metric("Precision", f"{prec:.2%}")
-            c3.metric("Recall", f"{rec:.2%}")
-            c4.metric("F1 Score", f"{f1:.2%}")
-
-            st.write("---")
-            col_cm1, col_cm2 = st.columns([1, 2])
+            # Prepare X and y
+            # Drop columns from df
+            X_data = df.drop(columns=[c for c in columns_to_exclude if c in df.columns], errors='ignore')
             
-            with col_cm1:
-                st.markdown("#### Confusion Matrix")
-                cm = confusion_matrix(y_test, y_pred)
-                fig_cm = plt.figure(figsize=(5, 4))
-                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                            xticklabels=['No Risk', 'Risk'],
-                            yticklabels=['No Risk', 'Risk'])
-                plt.ylabel('Actual')
-                plt.xlabel('Predicted')
-                st.pyplot(fig_cm)
+            # Keep only numeric features for X
+            X_data = X_data.select_dtypes(include=[np.number])
             
-            with col_cm2:
-                st.markdown("#### Classification Report")
-                report = classification_report(y_test, y_pred, target_names=['No Risk', 'Risk'], output_dict=True)
-                st.dataframe(pd.DataFrame(report).transpose().style.format("{:.2f}"))
-
-        # TAB 2: FEATURE IMPORTANCE
-        with tabs[1]:
-            st.subheader("Feature Importance")
-            importances = dt_classifier.feature_importances_
-            feature_imp_df = pd.Series(importances, index=selected_features).sort_values(ascending=False)
-
-            fig_imp = plt.figure(figsize=(10, 6))
-            sns.barplot(x=feature_imp_df.values, y=feature_imp_df.index, palette='viridis')
-            plt.title('Feature Importance')
-            plt.xlabel('Importance')
-            plt.grid(axis='x', linestyle='--', alpha=0.5)
-            st.pyplot(fig_imp)
-
-        # TAB 3: VISUALIZATION
-        with tabs[2]:
-            st.subheader("Decision Tree Visualization")
-            st.caption(f"Max Depth: {max_depth} | Features: {len(selected_features)}")
+            # Align X and y and drop NaNs
+            data_model = pd.concat([X_data, df[target_col]], axis=1).dropna()
             
-            fig_tree = plt.figure(figsize=(25, 15))
-            plot_tree(
-                dt_classifier, 
-                feature_names=selected_features,
-                class_names=['Efficient (0)', 'Inefficient (1)'],
-                filled=True,
-                rounded=True,
-                fontsize=10
+            X = data_model.drop(columns=[target_col])
+            y = data_model[target_col]
+            
+            st.write("**Features used (X):**", list(X.columns))
+            st.write(f"**Data shape:** {X.shape}")
+
+            # --- 3. TRAIN MODEL ---
+            st.sidebar.markdown("### ⚙️ Model Config")
+            
+            # --- UPDATED: Configurable Hyperparameters with defaults from your snippet ---
+            max_depth = st.sidebar.slider("Max Depth", 1, 30, 8)
+            min_samples_leaf = st.sidebar.slider("Min Samples Leaf", 1, 20, 5)
+            min_samples_split = st.sidebar.slider("Min Samples Split", 2, 40, 10)
+            
+            criterion = st.sidebar.selectbox("Criterion", ["entropy", "gini"], index=0) # Default entropy as requested
+            
+            use_balanced = st.sidebar.checkbox("Class Weight = 'balanced'", value=True)
+            class_weight = 'balanced' if use_balanced else None
+
+            test_size = st.sidebar.slider("Test Size Ratio", 0.05, 0.5, 0.3, 0.05)
+            
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+            
+            # Initialize with new params
+            dt_classifier = DecisionTreeClassifier(
+                random_state=42,
+                max_depth=max_depth,
+                min_samples_leaf=min_samples_leaf,
+                min_samples_split=min_samples_split,
+                class_weight=class_weight,
+                criterion=criterion
             )
-            st.pyplot(fig_tree)
+            dt_classifier.fit(X_train, y_train)
+            
+            y_pred = dt_classifier.predict(X_test)
 
-        # TAB 4: RULES TEXT
-        with tabs[3]:
-            st.subheader("Text Rules")
-            tree_rules = export_text(dt_classifier, feature_names=selected_features)
-            st.code(tree_rules, language="text")
+            # --- 4. TABS FOR RESULTS ---
+            tabs = st.tabs(["1. Model Evaluation", "2. Feature Importance", "3. Tree Visualization", "4. Text Rules"])
+
+            # TAB 1: EVALUATION METRICS
+            with tabs[0]:
+                st.subheader("=== ĐÁNH GIÁ MÔ HÌNH DECISION TREE ===")
+                
+                acc = accuracy_score(y_test, y_pred)
+                prec = precision_score(y_test, y_pred, zero_division=0)
+                rec = recall_score(y_test, y_pred, zero_division=0)
+                f1 = f1_score(y_test, y_pred, zero_division=0)
+
+                st.write(f"**Accuracy (Độ chính xác):** {acc:.4f} ({acc*100:.2f}%)")
+                st.write(f"**Precision (Độ chính xác dương):** {prec:.4f}")
+                st.write(f"**Recall (Độ nhạy):** {rec:.4f}")
+                st.write(f"**F1-Score:** {f1:.4f}")
+
+                st.write("---")
+                col_cm1, col_cm2 = st.columns([1, 2])
+                
+                with col_cm1:
+                    st.markdown("#### Ma trận nhầm lẫn (Confusion Matrix)")
+                    cm = confusion_matrix(y_test, y_pred)
+                    fig_cm = plt.figure(figsize=(8, 6))
+                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                                xticklabels=['Không nguy cơ', 'Nguy cơ kém hiệu quả'],
+                                yticklabels=['Không nguy cơ', 'Nguy cơ kém hiệu quả'])
+                    plt.xlabel('Dự đoán', fontsize=12)
+                    plt.ylabel('Thực tế', fontsize=12)
+                    st.pyplot(fig_cm)
+                
+                with col_cm2:
+                    st.markdown("#### Classification Report")
+                    report = classification_report(y_test, y_pred, target_names=['Không nguy cơ', 'Nguy cơ kém hiệu quả'], output_dict=True)
+                    st.dataframe(pd.DataFrame(report).transpose().style.format("{:.2f}"))
+
+            # TAB 2: FEATURE IMPORTANCE
+            with tabs[1]:
+                st.subheader("Tầm quan trọng của các đặc trưng")
+                importances = dt_classifier.feature_importances_
+                feature_imp_df = pd.Series(importances, index=X.columns).sort_values(ascending=False)
+
+                st.dataframe(feature_imp_df)
+
+                fig_imp = plt.figure(figsize=(12, 8))
+                sns.barplot(x=feature_imp_df.values, y=feature_imp_df.index, palette='viridis')
+                plt.title('Tầm quan trọng của các đặc trưng trong Decision Tree')
+                plt.xlabel('Mức độ quan trọng')
+                plt.ylabel('Đặc trưng')
+                plt.grid(axis='x', linestyle='--', alpha=0.5)
+                st.pyplot(fig_imp)
+
+            # TAB 3: VISUALIZATION
+            with tabs[2]:
+                st.subheader("Trực quan hóa cây quyết định")
+                
+                fig_tree = plt.figure(figsize=(20, 15))
+                plot_tree(
+                    dt_classifier, 
+                    feature_names=X.columns,
+                    class_names=['Không nguy cơ', 'Nguy cơ kém hiệu quả'],
+                    filled=True,
+                    rounded=True,
+                    fontsize=10
+                )
+                st.pyplot(fig_tree)
+
+            # TAB 4: RULES TEXT
+            with tabs[3]:
+                st.subheader("Decision Rules from the trained Decision Tree")
+                tree_rules = export_text(dt_classifier, feature_names=list(X.columns))
+                st.code(tree_rules, language="text")
+        else:
+            st.error("Could not calculate Efficiency_Score. Please check data quality in Regression tab.")
 
 # --- FOOTER ---
 st.sidebar.markdown("---")
